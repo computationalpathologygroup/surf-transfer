@@ -8,3 +8,4 @@ filesender.py.ini
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+.DS_Store

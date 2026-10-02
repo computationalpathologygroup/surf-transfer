@@ -22,6 +22,7 @@ from .models import (
     CORRUPT,
     DOWNLOADED,
     DOWNLOADING,
+    EXTRACTED,
     FAILED,
     KIND_ARCHIVE,
     KIND_FILE,
@@ -42,6 +43,12 @@ from .parsing import archive_suffix, group_into_slides
 from .util import now_iso, safe_relpath, sanitize_folder, sha256_file
 
 MANIFEST_VERSION = 2
+
+
+class SourceScopeError(ValueError):
+    """The run's source differs from the one this manifest was created for."""
+
+
 _LEGACY_STATUSES = (VERIFIED, MOVED, ARCHIVED)
 _SLIDE_VERDICTS = (VERIFIED, CORRUPT, UNVALIDATED)
 
@@ -158,6 +165,7 @@ class Manifest:
         self.files: dict[str, FileEntry] = {}
         self.slides: dict[str, SlideRecord] = {}
         self.sources: dict[str, dict[str, Any]] = {}
+        self.source_scope: list[str] = []  # what this manifest was created for; [] = unrecorded
         self.updated = now_iso()
         self.seq = 0
         self.migrated_from: dict[str, Any] | None = None
@@ -185,6 +193,7 @@ class Manifest:
         manifest.files = {k: _file_from_dict(v) for k, v in data.get("files", {}).items()}
         manifest.slides = {k: _slide_from_dict(v) for k, v in data.get("slides", {}).items()}
         manifest.sources = data.get("sources", {})
+        manifest.source_scope = list(data.get("source_scope") or [])
         manifest.seq = data.get("seq", len(manifest.files))
         manifest.migrated_from = data.get("migrated_from")
         manifest.updated = data.get("updated") or now_iso()
@@ -203,6 +212,7 @@ class Manifest:
             "updated": self.updated,
             "seq": self.seq,
             "sources": self.sources,
+            "source_scope": self.source_scope,
             "files": {k: dataclasses.asdict(v) for k, v in self.files.items()},
             "slides": {k: _slide_to_dict(v) for k, v in self.slides.items()},
             "migrated_from": self.migrated_from,
@@ -342,7 +352,7 @@ class Manifest:
         for entry in accepted:
             entry.checks["flag_accepted"] = entry.flagged
             entry.flagged = None
-            if entry.status in (VERIFIED, DOWNLOADED, MOVED, ARCHIVED):
+            if entry.status in (VERIFIED, DOWNLOADED, MOVED, ARCHIVED, EXTRACTED):
                 entry.status = QUEUED  # source changed under us: fetch the new version
                 self.reopen_slides_of([entry.key])
         return accepted
@@ -441,6 +451,27 @@ class Manifest:
 
     # --- sources ------------------------------------------------------------
 
+    def claim_source_scope(self, scopes: Iterable[str], allow_change: bool = False) -> None:
+        """Pin the manifest to the sources of this run, before anything is listed.
+        An unrecorded manifest (new, or from before this guard) adopts them. Later runs
+        may use any subset of the recorded scopes; a scope that is not recorded raises
+        SourceScopeError unless allow_change, which adds it to the record."""
+        wanted = sorted(set(scopes))
+        if not self.source_scope:
+            self.source_scope = wanted
+            return
+        new = [s for s in wanted if s not in self.source_scope]
+        if not new:
+            return
+        if not allow_change:
+            raise SourceScopeError(
+                f"{self.path} was created for {', '.join(self.source_scope)}, but this run "
+                f"uses {', '.join(new)}. Mixing sources in one output folder would mis-track "
+                "files: use a fresh -o for the new source (or pass --allow-source-change if "
+                "this is intended)."
+            )
+        self.source_scope = sorted({*self.source_scope, *wanted})
+
     def mark_complete(self, selector: str, note: str, date: str | None = None) -> list[str]:
         """Declare a source (matched by id or centre label) complete. Returns the ids."""
         matches = [
@@ -490,7 +521,7 @@ class Manifest:
                     )
                 elif record.members != members:
                     record.members = members
-                    if record.status in _SLIDE_VERDICTS + (MOVED, ARCHIVED):
+                    if record.status in _SLIDE_VERDICTS + (MOVED, ARCHIVED, EXTRACTED):
                         self._reset_slide(record, "members changed after the last verdict")
                 if record.centre is None:
                     record.centre = first.centre
@@ -594,17 +625,62 @@ class Manifest:
         return max(stamps) if stamps else None
 
     def refresh_slide_locations(self) -> None:
-        """verified / moved / archived at slide level follow the member files."""
+        """verified / moved / archived / extracted at slide level follow the member files."""
         for slide in self.slides.values():
-            if slide.status not in (VERIFIED, MOVED, ARCHIVED):
+            if slide.status not in (VERIFIED, MOVED, ARCHIVED, EXTRACTED):
                 continue
             statuses = {self.files[m].status for m in slide.members if m in self.files}
-            if statuses and statuses <= {ARCHIVED}:
+            if statuses and statuses <= {EXTRACTED}:
+                slide.status = EXTRACTED
+            elif statuses and statuses <= {ARCHIVED}:
                 slide.status = ARCHIVED
             elif statuses and statuses <= {MOVED, ARCHIVED}:
                 slide.status = MOVED
             else:
                 slide.status = VERIFIED
+
+    def deletable_zips(self) -> list[FileEntry]:
+        """Zips whose contents are safely out: unpacked with every member CRC-verified
+        (an unpack that hit zip_conflict / zip_paths / zip_member_* never reaches
+        VERIFIED), and every slide fed by them at a final verdict. A corrupt slide
+        counts as final: its bytes equal the zip's, so the zip adds no evidence."""
+        final = _SLIDE_VERDICTS + (MOVED, ARCHIVED, EXTRACTED)
+        out: list[FileEntry] = []
+        for archive in self.archive_units():
+            if archive.status != VERIFIED or not archive.members:
+                continue
+            parent = self.files.get(archive.members[0])
+            if (
+                parent is None
+                or parent.origin != "remote"
+                or parent.status != VERIFIED
+                or parent.checks.get("zip_crc") is not True
+            ):
+                continue
+            settled = True
+            for child in (e for e in self.files.values() if e.parent == parent.key):
+                fed = [
+                    s
+                    for s in self.slides.values()
+                    if s.kind != KIND_ARCHIVE and child.key in s.members
+                ]
+                if fed:
+                    settled = all(s.status in final for s in fed)
+                else:
+                    settled = child.status in (VERIFIED, MOVED, ARCHIVED)
+                if not settled:
+                    break
+            if settled:
+                out.append(parent)
+        return out
+
+    def mark_extracted(self, entry: FileEntry) -> None:
+        """Record that the tool deleted this zip itself. Size and sha256 stay; unlike a
+        VERIFIED file that vanished (-> MOVED), nothing is expected at the archive."""
+        entry.status = EXTRACTED
+        entry.removed_at = now_iso()
+        entry.checks["removed"] = "deleted after extraction"
+        self.refresh_slide_locations()
 
     # --- applying worker results (called by Pipeline, the only writer) ------
 

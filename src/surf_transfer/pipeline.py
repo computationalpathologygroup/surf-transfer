@@ -14,17 +14,19 @@ import queue
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from .manifest import Manifest
 from .models import (
     DOWNLOADED,
+    EXTRACTED,
     KIND_ARCHIVE,
     KIND_MRXS,
     UNVALIDATED,
     VERIFIED,
     CheckResult,
     Failure,
+    FileEntry,
     Job,
     JobResult,
     SlideRecord,
@@ -33,6 +35,8 @@ from .models import (
 from .util import now_iso
 
 log = logging.getLogger("surf_transfer")
+
+REFUSED: Any = object()  # sentinel from _local_zip: leave this file alone
 
 
 class JobRunner(Protocol):
@@ -87,6 +91,7 @@ class Pipeline:
         options: ValidationOptions,
         workers: int = 2,
         on_result: Callable[[SlideRecord], None] | None = None,
+        keep_zips: bool = False,
     ):
         self.manifest = manifest
         self.runner = runner
@@ -94,6 +99,7 @@ class Pipeline:
         self.options = options
         self.workers = max(1, workers)
         self._on_result = on_result
+        self.keep_zips = keep_zips
         self._jobs: queue.Queue[Job | None] = queue.Queue()
         self._results: queue.Queue[JobResult] = queue.Queue()
         self._threads: list[threading.Thread] = []
@@ -135,6 +141,7 @@ class Pipeline:
         plain (non-slide) files, which need only their file checks."""
         self.start()
         self._settle_plain_files()
+        self.remove_zips()
         count = 0
         for slide in list(self.manifest.slides.values()):
             if self.manifest.slide_ready(slide):
@@ -158,6 +165,51 @@ class Pipeline:
                 entry.status = VERIFIED
                 entry.verified_at = now
                 entry.checks["slide"] = "not-a-slide"
+
+    def remove_zips(self) -> None:
+        """Delete local zips whose contents are safely extracted and settled, and
+        finish deletions an earlier run began. Only files under the output
+        directory are touched, never anything on a source.
+
+        Order matters: the zip is marked `extracted` and the manifest saved *before*
+        the unlink. A crash in between leaves an `extracted` zip still on disk, which
+        the next call removes; the reverse order would leave a missing VERIFIED zip,
+        which reconcile_local reads as moved."""
+        if self.keep_zips:
+            return
+        root = self.output_dir.resolve()
+        for entry in self.manifest.deletable_zips():
+            if self._local_zip(root, entry) is not REFUSED:
+                self.manifest.mark_extracted(entry)
+                self.manifest.save()
+        for entry in self.manifest.files.values():
+            if entry.status != EXTRACTED:
+                continue
+            path = self._local_zip(root, entry)
+            if path is None or path is REFUSED:
+                continue
+            try:
+                path.unlink()
+            except OSError as e:
+                log.warning("cannot delete %s: %s", entry.rel_path, e)
+                continue
+            log.info("deleted zip after extraction: %s", entry.rel_path)
+
+    @staticmethod
+    def _local_zip(root: Path, entry: FileEntry) -> Path | None:
+        """The zip's path if it is on disk and is the file the manifest describes; None
+        if it is already gone; REFUSED (with a warning) if it is outside the output
+        directory or its size differs, so it must not be touched."""
+        path = (root / entry.rel_path).resolve()
+        if not path.is_relative_to(root):
+            log.warning("not deleting %s: outside the output directory", entry.rel_path)
+            return REFUSED
+        if not path.is_file():
+            return None
+        if path.stat().st_size != entry.size:
+            log.warning("not deleting %s: size differs from the manifest", entry.rel_path)
+            return REFUSED
+        return path
 
     # --- collecting ---------------------------------------------------------
 
@@ -189,6 +241,7 @@ class Pipeline:
             self._on_result(slide)
         if result.kind == "unpack" or new_slides:
             self.submit_ready()  # the unpacked files may complete a slide that was waiting
+        self.remove_zips()
 
     def finish(self) -> None:
         """Wait for every queued job, apply the results, stop the workers."""

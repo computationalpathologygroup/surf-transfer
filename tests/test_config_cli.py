@@ -11,6 +11,7 @@ from surf_transfer.config import (
     load_surfdrive_configs,
     parse_dotenv,
     parse_filesender_token,
+    parse_surfdrive_folder,
     parse_surfdrive_link,
 )
 from surf_transfer.manifest import Manifest
@@ -24,6 +25,15 @@ def test_parse_surfdrive_public_link():
         "JgJpQDsQabtspZE",
     )
     assert parse_surfdrive_link("https://surfdrive.surf.nl/index.php/s/abc123/")[1] == "abc123"
+
+
+def test_parse_surfdrive_folder_from_link_dir_parameter():
+    base = "https://surfdrive.surf.nl/s/abc123"
+    assert parse_surfdrive_folder(base) == ""
+    assert parse_surfdrive_folder(f"{base}?dir=/40x-scans/Symbiant_218_compleet") == (
+        "40x-scans/Symbiant_218_compleet"
+    )
+    assert parse_surfdrive_folder(f"{base}?dir=%2FA%20B%2Fc&path=/x") == "A B/c"
 
 
 @pytest.mark.parametrize("bad", ["http://surfdrive.surf.nl/s/abc", "https://x/y", "abc"])
@@ -232,3 +242,12 @@ def test_existing_flags_are_all_still_accepted():
         ]
     )
     assert args.max_bytes == "1G" and args.recheck_hashes and args.force and args.dry_run
+
+
+def test_surfdrive_link_dir_becomes_the_remote_folder(tmp_path):
+    args = cli.build_arg_parser().parse_args(
+        ["--surfdrive-link", "https://surfdrive.surf.nl/s/abc123?dir=/40x-scans/Sym", "-o", "out"]
+    )
+    config = cli.build_config(args, {}, tmp_path)
+    (drive,) = config.surfdrive
+    assert drive.username == "abc123" and drive.remote_folder == "40x-scans/Sym"

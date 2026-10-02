@@ -21,9 +21,10 @@ from .config import (
     load_filesender_config,
     load_surfdrive_configs,
     parse_filesender_token,
+    parse_surfdrive_folder,
     parse_surfdrive_link,
 )
-from .manifest import Manifest
+from .manifest import Manifest, SourceScopeError
 from .sources import (
     FileSenderSource,
     Source,
@@ -145,6 +146,20 @@ Exit codes: 0 all verified | 1 usage/config error | 2 failed or incomplete |
         help="Download files flagged as new-after-complete or changed-on-source",
     )
 
+    run.add_argument(
+        "--keep-zips",
+        action="store_true",
+        help="Keep each zip after it is unpacked and its slides are checked "
+        "(default: delete it, the extracted slide is what gets moved)",
+    )
+
+    run.add_argument(
+        "--allow-source-change",
+        action="store_true",
+        help="Let this run use a source the manifest was not created for "
+        "(default: refuse; use a fresh -o instead)",
+    )
+
     val = parser.add_argument_group("slide validation")
     val.add_argument(
         "--validate-workers",
@@ -242,6 +257,8 @@ def build_config(args: argparse.Namespace, env: dict[str, str], home: Path) -> C
         seed=args.seed,
         min_free_bytes=parse_size(args.min_free),
         accept_flagged=args.accept_flagged,
+        keep_zips=args.keep_zips,
+        allow_source_change=args.allow_source_change,
         slide_filter=tuple(args.slide),
     )
     filesender = load_filesender_config(
@@ -277,6 +294,7 @@ def build_config(args: argparse.Namespace, env: dict[str, str], home: Path) -> C
                 name="link",
                 username=token,
                 password=env.get("SURFDRIVE_SHARE_PASSWORD", ""),
+                remote_folder=parse_surfdrive_folder(args.surfdrive_link),
                 centre=args.centre,
                 insecure=args.insecure,
             )
@@ -454,6 +472,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         summary = app.run(manifest, sources, config.run, runner)
+    except SourceScopeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return report.EXIT_USAGE
     except KeyboardInterrupt:
         print("\nInterrupted; manifest saved. Re-run to continue.", file=sys.stderr)
         return 130

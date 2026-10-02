@@ -167,8 +167,22 @@ folder beside the index file.
   slides are validated like any other. A damaged zip is `corrupt` (check `zip`). Password-protected zips
   are reported, not guessed. Other archive formats (`.7z`, `.rar`, `.tar*`) end as `unvalidated` with
   "extract it manually".
-- The zip stays on disk. Zip plus extracted slide use twice the space until you move them;
-  `--status` says so.
+- **The zip is deleted by default** once it is safely out of the way: every member was CRC-verified, no
+  `zip_conflict` / `zip_paths` / `zip_member_size` / `zip_member_hash` failure occurred, and every slide
+  fed by it has a final verdict (`verified`, `corrupt` or `unvalidated`; a corrupt slide's bytes equal the
+  zip's, so the zip adds no evidence). A zip whose extraction failed (damaged, encrypted, conflicting,
+  unsafe paths) is kept as the evidence. Only the local copy is deleted; sources stay read-only.
+  The manifest keeps the zip as `extracted` (size, sha256 and `removed_at` stay), which counts as done in
+  `--status` and is never downloaded again, nor mistaken for a `moved` file. Pass `--keep-zips` to keep
+  every zip (it then stays `verified` beside its slide and uses twice the space until you move it).
+
+### One manifest, one source
+
+The manifest records the sources it was created for: the FileSender instance (plus guest, if named) or
+the SurfDrive share token **and its `?dir=` folder**. A run that uses a source not on that list stops
+before listing anything and names both; use a fresh `-o` for the new source, or pass
+`--allow-source-change` if mixing is intended. A manifest without a record adopts the current source on its
+first run. With `?dir=`, stored paths are relative to that folder.
 
 ## Provenance, completeness and re-sends
 

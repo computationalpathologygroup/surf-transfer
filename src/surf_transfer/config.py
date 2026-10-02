@@ -8,6 +8,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlsplit
 
 DEFAULT_FILESENDER_URL = "https://filesender.surf.nl/rest.php"
 DEFAULT_SURFDRIVE_URL = "https://surfdrive.surf.nl"
@@ -52,6 +53,8 @@ class RunOptions:
     seed: int | None = None
     min_free_bytes: int = 1024**3
     accept_flagged: bool = False
+    keep_zips: bool = False
+    allow_source_change: bool = False
     slide_filter: tuple[str, ...] = ()
 
 
@@ -200,6 +203,12 @@ def parse_surfdrive_link(url: str) -> tuple[str, str]:
     if not match:
         raise ValueError(f"not a SurfDrive/ownCloud public share link: {url!r}")
     return match.group(1), match.group(2)
+
+
+def parse_surfdrive_folder(url: str) -> str:
+    """The subfolder a share link points into (`?dir=/a/b`), '' for the share root."""
+    values = parse_qs(urlsplit(url.strip()).query).get("dir", [])
+    return unquote(values[0]).strip("/") if values else ""
 
 
 _FILESENDER_TOKEN = re.compile(r"token=([0-9a-fA-F-]{8,})")

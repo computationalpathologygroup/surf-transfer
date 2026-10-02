@@ -17,6 +17,7 @@ from .models import (
     ARCHIVED,
     DOWNLOADED,
     DOWNLOADING,
+    EXTRACTED,
     FAILED,
     KIND_ARCHIVE,
     MOVED,
@@ -126,7 +127,7 @@ def _resolve_archive(manifest: Manifest, archive_dir: Path) -> None:
 def _existing_file_decision(manifest: Manifest, key: str, local: Path, recheck: bool) -> str:
     """For an entry that is already past download: 'skip', 'moved' or 'redo'."""
     entry = manifest.files[key]
-    if entry.status in (MOVED, ARCHIVED):
+    if entry.status in (MOVED, ARCHIVED, EXTRACTED):
         return "skip"
     if not local.exists():
         return "moved" if entry.status == VERIFIED else "redo"
@@ -172,7 +173,13 @@ def run_downloads(
                 summary.failed += 1
                 continue
 
-            if not opts.force and entry.status in (VERIFIED, DOWNLOADED, MOVED, ARCHIVED):
+            if not opts.force and entry.status in (
+                VERIFIED,
+                DOWNLOADED,
+                MOVED,
+                ARCHIVED,
+                EXTRACTED,
+            ):
                 decision = _existing_file_decision(manifest, remote.key, local, opts.recheck_hashes)
                 if decision == "skip":
                     log.info("%s: skipping (status=%s)", tag, entry.status)
@@ -218,7 +225,7 @@ def run_downloads(
             now = now_iso()
             entry.status = DOWNLOADED
             entry.sha256, entry.checks, entry.error = outcome.sha256, outcome.checks, None
-            entry.downloaded_at, entry.verified_at = now, None
+            entry.downloaded_at, entry.verified_at, entry.removed_at = now, None, None
             manifest.reopen_slides_of([remote.key])
             manifest.save()
             budget.record(remote.size)
@@ -239,6 +246,9 @@ def run(
 ) -> RunSummary:
     """Sync every source, download what is missing, validate slides as they complete."""
     summary = RunSummary()
+    manifest.claim_source_scope(
+        (getattr(s, "scope_id", None) or s.source_id for s in sources), opts.allow_source_change
+    )
     opts.output_dir.mkdir(parents=True, exist_ok=True)
     manifest.reconcile_local(opts.output_dir)
     if opts.accept_flagged:
@@ -252,7 +262,12 @@ def run(
         return summary
 
     pipeline = Pipeline(
-        manifest, runner, opts.output_dir, validation_options(opts), workers=opts.validate_workers
+        manifest,
+        runner,
+        opts.output_dir,
+        validation_options(opts),
+        workers=opts.validate_workers,
+        keep_zips=opts.keep_zips,
     )
     try:
         pipeline.submit_ready()  # slides left downloaded-but-unvalidated by an earlier run
@@ -274,8 +289,14 @@ def revalidate(manifest: Manifest, opts: RunOptions, runner: JobRunner) -> tuple
     manifest.sync_slides()
     manifest.reconcile_local(opts.output_dir)
     pipeline = Pipeline(
-        manifest, runner, opts.output_dir, validation_options(opts), workers=opts.validate_workers
+        manifest,
+        runner,
+        opts.output_dir,
+        validation_options(opts),
+        workers=opts.validate_workers,
+        keep_zips=opts.keep_zips,
     )
+    pipeline.remove_zips()  # finish deletions a crashed run left behind
     queued = skipped = 0
     wanted = [w.lower() for w in opts.slide_filter]
     try:
@@ -285,7 +306,7 @@ def revalidate(manifest: Manifest, opts: RunOptions, runner: JobRunner) -> tuple
             if wanted and not any(w in slide.name.lower() for w in wanted):
                 continue
             if slide.kind == KIND_ARCHIVE:
-                if slide.status == VERIFIED:
+                if slide.status in (VERIFIED, EXTRACTED):
                     continue  # already unpacked and CRC-verified
             elif not wanted and slide.status == VERIFIED:
                 continue  # already slide-verified; name it with --slide to force a re-check

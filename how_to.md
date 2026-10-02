@@ -101,6 +101,8 @@ are downloaded, so validating one slide overlaps downloading the next.
 | `--recheck-hashes` | re-hash local files instead of trusting the manifest |
 | `--min-free SIZE` | refuse files that would leave less than this free (default 1G) |
 | `--accept-flagged` | download files flagged as new-after-complete or changed-on-source |
+| `--keep-zips` | keep each zip after it is unpacked (default: delete it once its slides have a verdict) |
+| `--allow-source-change` | let this run use a source the manifest was not created for (default: refuse; use a fresh `-o`) |
 | `--validate-workers N` | parallel validation subprocesses (default 2) |
 | `--sample-tiles N` | random level-0 tiles per slide (default 64) |
 | `--deep-check` | decode every tile at every level (slow; suspicious slides only) |
@@ -207,8 +209,9 @@ manifest.
 - **Zips** are downloaded, then CRC-checked while being unpacked **into the zip's own folder**, so a
   loose `X.mrxs` and a zipped `X/` data folder end up side by side and are validated as one slide.
   Nothing is overwritten: identical existing files are reused, a differing one stops the unpack and
-  both paths are reported. The zip stays on disk (so zip and slide both take space until you move
-  them). A damaged zip is `corrupt` (`zip`). `.7z`, `.rar`, `.tar*` are `unvalidated` ("extract it
+  both paths are reported. Once every slide from the zip has a verdict (even `corrupt`), the tool
+  **deletes the local zip** and records it as `extracted` (done, never re-downloaded, not "moved"). A zip
+  that failed to extract is kept as evidence, and `--keep-zips` keeps all of them. A damaged zip is `corrupt` (`zip`). `.7z`, `.rar`, `.tar*` are `unvalidated` ("extract it
   manually"); extract them into the output folder yourself and the next run picks the files up.
 - Anything not clearly a slide (`.txt`, `.csv`, `.pdf`, …) gets the file checks only.
 

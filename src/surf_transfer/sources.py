@@ -87,6 +87,14 @@ class FileSenderSource:
         self.source_id = (
             f"filesender:guest:{guest_id}" if guest_id is not None else "filesender:pending"
         )
+        # Known before any request: the instance plus the guest, if one was named.
+        self.scope_id = f"filesender:{cfg.base_url}" + (
+            f":guest:{guest_id}"
+            if guest_id is not None
+            else f":guest-email:{guest_email.lower()}"
+            if guest_email
+            else ""
+        )
 
     # signed GET --------------------------------------------------------------
 
@@ -243,6 +251,10 @@ class SurfDriveSource:
         self.cfg, self.client = cfg, client
         self.centre = cfg.centre
         self.source_id = f"surfdrive:{cfg.username}"
+        # Share (or account) plus the folder inside it: `?dir=` changes what rel_paths mean.
+        self.scope_id = (
+            f"surfdrive:{cfg.mode}:{cfg.base_url}:{cfg.username}:dir={cfg.remote_folder}"
+        )
         self._root = surfdrive_endpoint(cfg)
         self._auth = (cfg.username, cfg.password)
         self._label = (

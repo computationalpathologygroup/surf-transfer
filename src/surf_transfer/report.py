@@ -13,6 +13,7 @@ from .models import (
     ARCHIVED,
     CORRUPT,
     DOWNLOADED,
+    EXTRACTED,
     FAILED,
     MOVED,
     QUEUED,
@@ -30,9 +31,19 @@ EXIT_CORRUPT = 3
 EXIT_BUDGET = 4
 EXIT_UNVALIDATED = 5
 
-_FILE_ORDER = (QUEUED, "downloading", DOWNLOADED, FAILED, VERIFIED, MOVED, ARCHIVED)
-_SLIDE_ORDER = (VERIFIED, MOVED, ARCHIVED, CORRUPT, UNVALIDATED, VALIDATING, DOWNLOADED, QUEUED)
-_SAFE = (VERIFIED, MOVED, ARCHIVED)
+_FILE_ORDER = (QUEUED, "downloading", DOWNLOADED, FAILED, VERIFIED, MOVED, ARCHIVED, EXTRACTED)
+_SLIDE_ORDER = (
+    VERIFIED,
+    MOVED,
+    ARCHIVED,
+    EXTRACTED,
+    CORRUPT,
+    UNVALIDATED,
+    VALIDATING,
+    DOWNLOADED,
+    QUEUED,
+)
+_SAFE = (VERIFIED, MOVED, ARCHIVED, EXTRACTED)
 
 
 def _slide_bytes(manifest: Manifest, slide: SlideRecord) -> int:
@@ -112,6 +123,13 @@ def status_data(manifest: Manifest) -> dict[str, Any]:
             for m in s.members
             if m in manifest.files
         ),
+        "extracted_bytes": sum(
+            manifest.files[m].size or 0
+            for s in manifest.archive_units()
+            if s.status == EXTRACTED
+            for m in s.members
+            if m in manifest.files
+        ),
         "unvalidated": [
             {"slide": s.name, "source": s.source_id, "failure": _failure(s)}
             for s in slides
@@ -185,10 +203,15 @@ def format_status(data: dict[str, Any], state_path: Path | str = "") -> str:
     if data["archives"]:
         counts = ", ".join(f"{n} {s}" for s, n in sorted(data["archives"].items()))
         lines.append(f"Archives (zip containers): {counts}")
+        if data["extracted_bytes"]:
+            lines.append(
+                f"  Extracted zip(s) ({format_bytes(data['extracted_bytes'])}) were deleted after "
+                "unpacking; they count as done, not as moved."
+            )
         if data["archive_bytes"]:
             lines.append(
-                f"  The verified zip(s) ({format_bytes(data['archive_bytes'])}) stay beside the "
-                "slides unpacked from them, so both use space on the share until moved."
+                f"  Kept zip(s) ({format_bytes(data['archive_bytes'])}) still sit beside the "
+                "slides unpacked from them (--keep-zips, or those slides are not yet checked)."
             )
     if data["legacy_files"]:
         lines.append(

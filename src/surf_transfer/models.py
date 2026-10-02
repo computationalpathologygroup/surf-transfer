@@ -13,14 +13,25 @@ FAILED = "failed"  # transport failure, retried next run
 VERIFIED = "verified"
 MOVED = "moved"
 ARCHIVED = "archived"
+EXTRACTED = "extracted"  # a zip the tool deleted itself after unpacking it; never moved
 
-# Slide-level statuses (VERIFIED / MOVED / ARCHIVED are shared with files).
+# Slide-level statuses (VERIFIED / MOVED / ARCHIVED / EXTRACTED are shared with files).
 VALIDATING = "validating"
 CORRUPT = "corrupt"
 UNVALIDATED = "unvalidated"
 
-FILE_STATUSES = (QUEUED, DOWNLOADING, DOWNLOADED, FAILED, VERIFIED, MOVED, ARCHIVED)
-SLIDE_STATUSES = (QUEUED, DOWNLOADED, VALIDATING, VERIFIED, CORRUPT, UNVALIDATED, MOVED, ARCHIVED)
+FILE_STATUSES = (QUEUED, DOWNLOADING, DOWNLOADED, FAILED, VERIFIED, MOVED, ARCHIVED, EXTRACTED)
+SLIDE_STATUSES = (
+    QUEUED,
+    DOWNLOADED,
+    VALIDATING,
+    VERIFIED,
+    CORRUPT,
+    UNVALIDATED,
+    MOVED,
+    ARCHIVED,
+    EXTRACTED,
+)
 
 # Slide kinds.
 KIND_MRXS = "mrxs"
@@ -102,6 +113,7 @@ class FileEntry:
     downloaded_at: str | None = None
     verified_at: str | None = None
     archived_at: str | None = None
+    removed_at: str | None = None  # EXTRACTED: when the tool deleted the local zip
     archive_path: str | None = None
     error: str | None = None
     flagged: str | None = None  # e.g. appeared after the source was marked complete

@@ -2,10 +2,12 @@
 
 import json
 
+import pytest
+
 from fakes import FakeRunner, FakeSource
 from surf_transfer import app, report
 from surf_transfer.config import RunOptions
-from surf_transfer.manifest import Manifest
+from surf_transfer.manifest import Manifest, SourceScopeError
 from surf_transfer.models import (
     ARCHIVED,
     CORRUPT,
@@ -389,3 +391,79 @@ def test_interrupted_run_leaves_downloaded_slides_that_the_next_run_validates(tm
     manifest, summary, runner = do_run(tmp_path, source)
     assert source.opened == [] and [j.name for j in runner.jobs] == ["a"]
     assert next(iter(manifest.slides.values())).status == VERIFIED
+
+
+# --- source guard: a manifest belongs to the source it was created for ---
+
+
+def drive_source(folder, files=None, group="G1"):
+    from surf_transfer.config import SurfDriveConfig
+    from surf_transfer.sources import SurfDriveSource
+
+    cfg = SurfDriveConfig(
+        mode="public",
+        base_url="https://surfdrive.surf.nl",
+        name="link",
+        username="TOKEN",
+        remote_folder=folder,
+    )
+    fake = FakeSource(files or FILES, group=group)
+    fake.scope_id = SurfDriveSource(cfg, client=None).scope_id  # type: ignore[arg-type]
+    return fake
+
+
+def test_same_source_passes_again_and_is_recorded(tmp_path):
+    do_run(tmp_path, drive_source("40x/A"))
+    manifest, summary, _ = do_run(tmp_path, drive_source("40x/A"))
+    assert summary.downloaded == 0
+    assert manifest.source_scope == ["surfdrive:public:https://surfdrive.surf.nl:TOKEN:dir=40x/A"]
+    assert json.loads((tmp_path / "out" / "state.json").read_text())["source_scope"]
+
+
+def test_a_different_surfdrive_dir_is_refused_before_listing(tmp_path):
+    do_run(tmp_path, drive_source("40x/A"))
+    other = drive_source("40x/B")
+    opened_before = list(other.opened)
+    opts = options(tmp_path)
+    manifest = Manifest.load(opts.state_file)
+    with pytest.raises(SourceScopeError) as err:
+        app.run(manifest, [other], opts, FakeRunner(), free_bytes=BIG)
+    message = str(err.value)
+    assert "dir=40x/A" in message and "dir=40x/B" in message  # names both
+    assert "fresh -o" in message and "--allow-source-change" in message
+    assert manifest.sources == Manifest.load(opts.state_file).sources  # nothing listed or synced
+    assert other.opened == opened_before
+    assert manifest.source_scope == ["surfdrive:public:https://surfdrive.surf.nl:TOKEN:dir=40x/A"]
+
+
+def test_allow_source_change_overrides_the_guard(tmp_path):
+    do_run(tmp_path, drive_source("40x/A"))
+    manifest, summary, _ = do_run(
+        tmp_path, drive_source("40x/B", {"c.svs": b"C" * 50}, group="G2"), allow_source_change=True
+    )
+    assert summary.downloaded == 1
+    assert len(manifest.source_scope) == 2
+
+
+def test_manifest_without_a_recorded_source_adopts_the_current_one(tmp_path):
+    do_run(tmp_path, drive_source("40x/A"))
+    state = tmp_path / "out" / "state.json"
+    data = json.loads(state.read_text())
+    del data["source_scope"]  # a manifest written before the guard existed
+    state.write_text(json.dumps(data))
+    manifest, summary, _ = do_run(tmp_path, drive_source("40x/B"))
+    assert summary.failed == 0
+    assert manifest.source_scope == ["surfdrive:public:https://surfdrive.surf.nl:TOKEN:dir=40x/B"]
+    with pytest.raises(SourceScopeError):
+        do_run(tmp_path, drive_source("40x/A"))
+
+
+def test_filesender_scope_is_the_instance_and_guest(tmp_path):
+    from surf_transfer.config import FileSenderConfig
+    from surf_transfer.sources import FileSenderSource
+
+    cfg = FileSenderConfig(base_url="https://fs.example/rest.php", username="u", apikey="k")
+    a = FileSenderSource(cfg, client=None, guest_id=3)  # type: ignore[arg-type]
+    b = FileSenderSource(cfg, client=None, guest_email="G@X.nl")  # type: ignore[arg-type]
+    assert a.scope_id == "filesender:https://fs.example/rest.php:guest:3"
+    assert b.scope_id == "filesender:https://fs.example/rest.php:guest-email:g@x.nl"

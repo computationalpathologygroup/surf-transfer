@@ -8,6 +8,7 @@ from surf_transfer.manifest import Manifest
 from surf_transfer.models import (
     CORRUPT,
     DOWNLOADED,
+    EXTRACTED,
     UNVALIDATED,
     VERIFIED,
     ExtractedFile,
@@ -207,7 +208,7 @@ def test_unpacked_archive_registers_files_and_queues_its_slides(tmp_path):
     p.finish()
     assert [(j.kind, j.name) for j in runner.jobs] == [("unpack", "z"), ("validate", "X")]
     zip_entry = m.files["filesender:1:1"]
-    assert zip_entry.status == VERIFIED and zip_entry.checks["zip_crc"] is True
+    assert zip_entry.status == EXTRACTED and zip_entry.checks["zip_crc"] is True
     extracted = [e for e in m.files.values() if e.origin == "extracted"]
     assert sorted(e.rel_path for e in extracted) == ["Batch/X.mrxs", "Batch/X/Slidedat.ini"]
     assert all(e.status == VERIFIED and e.parent == "filesender:1:1" for e in extracted)
@@ -282,3 +283,82 @@ def test_a_zip_in_another_folder_does_not_block_anything(tmp_path):
     m.sync_slides()
     m.files["filesender:1:1"].status = DOWNLOADED
     assert m.slide_ready(slide_named(m, "X", "mrxs"))
+
+
+class UnpackRunner(FakeRunner):
+    def run(self, job):
+        if job.kind == "unpack":
+            self.jobs.append(job)
+            return JobResult(
+                slide_key=job.slide_key,
+                kind="unpack",
+                status=VERIFIED,
+                format="zip",
+                extract_dir=job.extract_dir,
+                extracted=[ExtractedFile("X.tif", 5, "a" * 64)],
+            )
+        return super().run(job)
+
+
+def zip_on_disk(tmp_path):
+    m = make_manifest(tmp_path, ["z.zip"])
+    (tmp_path / "Batch").mkdir()
+    (tmp_path / "Batch" / "z.zip").write_bytes(b"x" * 10)  # size 10 matches the listing
+    return m
+
+
+def test_zip_is_deleted_once_its_slide_is_settled_even_when_corrupt(tmp_path):
+    m = zip_on_disk(tmp_path)
+    p = pipeline(m, UnpackRunner(verdicts={"X": CORRUPT}), tmp_path)
+    p.submit_ready()
+    p.finish()
+    zip_entry = m.files["filesender:1:1"]
+    assert not (tmp_path / "Batch" / "z.zip").exists()
+    assert zip_entry.status == EXTRACTED and zip_entry.size == 10 and zip_entry.removed_at
+    assert next(s for s in m.slides.values() if s.name == "X").status == CORRUPT
+
+
+def test_zip_stays_while_a_slide_it_fed_has_no_verdict(tmp_path):
+    m = zip_on_disk(tmp_path)
+    p = pipeline(m, UnpackRunner(), tmp_path)
+    p.start()
+    p.submit_ready()
+    # Apply only the unpack result: the extracted slide is queued, not decided.
+    p._apply(p._results.get(timeout=5))
+    assert (tmp_path / "Batch" / "z.zip").exists()
+    assert m.files["filesender:1:1"].status == VERIFIED
+    p.finish()
+    assert not (tmp_path / "Batch" / "z.zip").exists()
+
+
+def test_keep_zips_keeps_the_file_and_the_verified_state(tmp_path):
+    m = zip_on_disk(tmp_path)
+    p = Pipeline(m, UnpackRunner(), tmp_path, ValidationOptions(), keep_zips=True)
+    p.submit_ready()
+    p.finish()
+    assert (tmp_path / "Batch" / "z.zip").exists()
+    assert m.files["filesender:1:1"].status == VERIFIED
+
+
+def test_deleted_zip_survives_reconcile_and_a_save_load_round_trip(tmp_path):
+    m = zip_on_disk(tmp_path)
+    p = pipeline(m, UnpackRunner(), tmp_path)
+    p.submit_ready()
+    p.finish()
+    m.save()
+    again = Manifest.load(tmp_path / "state.json")
+    again.reconcile_local(tmp_path)
+    entry = again.files["filesender:1:1"]
+    assert entry.status == EXTRACTED and entry.sha256 == m.files["filesender:1:1"].sha256
+    assert entry.removed_at == m.files["filesender:1:1"].removed_at
+    assert not again.needs_download("filesender:1:1")
+
+
+def test_zip_whose_size_changed_on_disk_is_not_deleted(tmp_path):
+    m = zip_on_disk(tmp_path)
+    (tmp_path / "Batch" / "z.zip").write_bytes(b"someone else's file")
+    p = pipeline(m, UnpackRunner(), tmp_path)
+    p.submit_ready()
+    p.finish()
+    assert (tmp_path / "Batch" / "z.zip").exists()
+    assert m.files["filesender:1:1"].status == VERIFIED
