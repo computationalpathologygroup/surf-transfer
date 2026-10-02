@@ -1,2 +1,10 @@
 .devcontainer/
 __pycache__/
+.env
+filesender.py.ini
+.filesender/
+.venv/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

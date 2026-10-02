@@ -1,109 +1,34 @@
 #!/usr/bin/env python3
 """
-download_state.py — persistent manifest for the FileSender guest downloader.
+download_state.py — the version-1 manifest (legacy).
 
-Pure logic, no network calls. Tracks per-file download/verification/archive
+The downloader now uses surf_transfer.manifest.Manifest (version 2), which
+migrates v1 files automatically. DownloadState is kept so the v1 behaviour and
+its tests stay available; parse_size, sha256_file and RunBudget are re-exported
+from the package. Pure logic, no network calls. Tracks per-file download/verification/archive
 state across runs so that a batch download can be interrupted, files moved
 out of the output directory by hand, and a later run picks up exactly where
 it left off without re-downloading anything already accounted for.
 """
 
-import hashlib
 import json
 import os
-import re
-from datetime import datetime, timezone
+import sys
 from pathlib import Path
 
-STATUS_QUEUED = "queued"
-STATUS_DOWNLOADING = "downloading"
-STATUS_VERIFIED = "verified"
-STATUS_MOVED = "moved"
-STATUS_ARCHIVED = "archived"
-STATUS_FAILED = "failed"
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-_SIZE_UNITS = {
-    "": 1,
-    "B": 1,
-    "K": 1024,
-    "KB": 1024,
-    "M": 1024**2,
-    "MB": 1024**2,
-    "G": 1024**3,
-    "GB": 1024**3,
-    "T": 1024**4,
-    "TB": 1024**4,
-}
-
-_SIZE_RE = re.compile(r"^\s*([0-9]*\.?[0-9]+)\s*([A-Za-z]*)\s*$")
-
-
-def _now_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def sha256_file(path, chunk_size=8 * 1024 * 1024):
-    """Stream a file from disk and return its hex sha256 digest."""
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        while True:
-            chunk = f.read(chunk_size)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def parse_size(text):
-    """Parse a human size like '200G', '1.5T', '500M', or a plain byte count."""
-    if isinstance(text, (int, float)):
-        return int(text)
-    match = _SIZE_RE.match(str(text))
-    if not match:
-        raise ValueError(f"Invalid size: {text!r}")
-    number, suffix = match.group(1), match.group(2).upper()
-    if suffix not in _SIZE_UNITS:
-        raise ValueError(f"Unknown size suffix {suffix!r} in {text!r}")
-    return int(float(number) * _SIZE_UNITS[suffix])
-
-
-class RunBudget:
-    """Tracks how many files/bytes a single run is allowed to download."""
-
-    def __init__(self, max_files=None, max_bytes=None):
-        self.max_files = max_files
-        self.max_bytes = max_bytes
-        self.files_done = 0
-        self.bytes_done = 0
-        self.stop_reason = None
-        self.oversized_file = False
-
-    @property
-    def exhausted(self):
-        return self.stop_reason is not None
-
-    def can_start(self, size):
-        """Whether a file of this size may begin downloading under the budget."""
-        if self.exhausted:
-            return False
-        if self.max_files is not None and self.files_done >= self.max_files:
-            self.stop_reason = f"reached --max-files limit ({self.max_files} file(s))"
-            return False
-        if self.max_bytes is not None:
-            if size > self.max_bytes:
-                self.oversized_file = True
-                self.stop_reason = (
-                    f"file size ({size} bytes) exceeds --max-bytes budget ({self.max_bytes} bytes)"
-                )
-                return False
-            if self.bytes_done + size > self.max_bytes:
-                self.stop_reason = f"reached --max-bytes limit ({self.max_bytes} bytes)"
-                return False
-        return True
-
-    def record(self, size):
-        self.files_done += 1
-        self.bytes_done += size
+from surf_transfer.budget import RunBudget  # noqa: E402,F401  (re-exported)
+from surf_transfer.models import (  # noqa: E402
+    ARCHIVED as STATUS_ARCHIVED,
+    DOWNLOADING as STATUS_DOWNLOADING,
+    FAILED as STATUS_FAILED,
+    MOVED as STATUS_MOVED,
+    QUEUED as STATUS_QUEUED,
+    VERIFIED as STATUS_VERIFIED,
+)
+from surf_transfer.util import now_iso as _now_iso  # noqa: E402
+from surf_transfer.util import parse_size, sha256_file  # noqa: E402,F401  (re-exported)
 
 
 def _new_entry(transfer_id, file_id):
