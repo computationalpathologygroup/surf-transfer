@@ -1,0 +1,5 @@
+requests
+urllib3
+openslide-python
+openslide-bin
+pytest>=8.0.0

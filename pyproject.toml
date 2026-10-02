@@ -1,0 +1,45 @@
+[project]
+name = "surf-transfer"
+version = "0.2.0"
+description = "Download FileSender and SurfDrive transfers and verify every slide"
+requires-python = ">=3.10"
+dependencies = [
+    "requests",
+    "openslide-python",
+    "openslide-bin",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "mypy", "ruff", "types-requests", "tifffile", "numpy", "pillow"]
+
+[project.scripts]
+surf-transfer = "surf_transfer.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+force-exclude = true
+extend-exclude = ["filesender.py", "tests/test_download_state.py", "download_state.py", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/surf_transfer"]
+ignore_missing_imports = true
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501", "E402"]
