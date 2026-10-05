@@ -330,3 +330,21 @@ def test_flat_refuses_several_sources_and_layout_switch(tmp_path):
     m.sync_listing([remote(1, 1, name="a.svs")], centre=None)
     with pytest.raises(SourceScopeError):
         m.claim_layout(True, 1)
+
+
+def test_save_retries_a_transiently_locked_manifest(tmp_path, monkeypatch):
+    import os as _os
+
+    real, calls = _os.replace, []
+
+    def flaky(src, dst):
+        calls.append(1)
+        if len(calls) < 3:
+            raise PermissionError(5, "Access is denied")
+        return real(src, dst)
+
+    monkeypatch.setattr("surf_transfer.manifest.os.replace", flaky)
+    monkeypatch.setattr("surf_transfer.manifest.time.sleep", lambda s: None)
+    m = Manifest(tmp_path / "state.json")
+    m.save()
+    assert len(calls) == 3 and (tmp_path / "state.json").exists()

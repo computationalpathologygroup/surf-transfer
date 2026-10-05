@@ -13,6 +13,7 @@ import dataclasses
 import json
 import os
 import shutil
+import time
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
@@ -149,6 +150,19 @@ class SyncResult:
     flagged: list[FileEntry] = dataclasses.field(default_factory=list)
 
 
+def _replace_with_retry(src: Path, dst: Path, attempts: int = 8, delay: float = 0.25) -> None:
+    """os.replace, retried on PermissionError: on Windows (and network shares) a virus
+    scanner, indexer or sync client briefly holding `dst` open makes the replace fail."""
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay * (attempt + 1))
+
+
 def _scope(entry: FileEntry) -> str:
     """Identifies the transfer/share a file belongs to, independent of source_id."""
     kind = entry.key.removeprefix("extracted:").split(":", 1)[
@@ -232,7 +246,7 @@ class Manifest:
         tmp_path = self.path.with_name(self.path.name + ".tmp")
         with tmp_path.open("w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, indent=2, sort_keys=True)
-        os.replace(tmp_path, self.path)
+        _replace_with_retry(tmp_path, self.path)
         self._render_txt()
 
     def _render_txt(self) -> None:
