@@ -54,6 +54,7 @@ class RunOptions:
     min_free_bytes: int = 1024**3
     accept_flagged: bool = False
     keep_zips: bool = False
+    flat: bool = False
     allow_source_change: bool = False
     slide_filter: tuple[str, ...] = ()
 
