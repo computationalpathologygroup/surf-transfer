@@ -166,6 +166,7 @@ class Manifest:
         self.slides: dict[str, SlideRecord] = {}
         self.sources: dict[str, dict[str, Any]] = {}
         self.source_scope: list[str] = []  # what this manifest was created for; [] = unrecorded
+        self.flat = False  # files sit directly under the output dir, no per-source folder
         self.updated = now_iso()
         self.seq = 0
         self.migrated_from: dict[str, Any] | None = None
@@ -194,6 +195,7 @@ class Manifest:
         manifest.slides = {k: _slide_from_dict(v) for k, v in data.get("slides", {}).items()}
         manifest.sources = data.get("sources", {})
         manifest.source_scope = list(data.get("source_scope") or [])
+        manifest.flat = bool(data.get("flat", False))
         manifest.seq = data.get("seq", len(manifest.files))
         manifest.migrated_from = data.get("migrated_from")
         manifest.updated = data.get("updated") or now_iso()
@@ -213,6 +215,7 @@ class Manifest:
             "seq": self.seq,
             "sources": self.sources,
             "source_scope": self.source_scope,
+            "flat": self.flat,
             "files": {k: dataclasses.asdict(v) for k, v in self.files.items()},
             "slides": {k: _slide_to_dict(v) for k, v in self.slides.items()},
             "migrated_from": self.migrated_from,
@@ -255,7 +258,26 @@ class Manifest:
         entry = self.files[key]
         return entry.status in (QUEUED, FAILED) and entry.flagged is None
 
+    def claim_layout(self, flat: bool, source_count: int) -> None:
+        """Pin the folder layout. Flat puts files directly in the output dir, so it needs
+        exactly one source, and cannot be switched on a manifest that already tracks files."""
+        if flat and source_count > 1:
+            raise SourceScopeError(
+                "--flat puts files directly in the output folder, so it supports one source "
+                "per output folder; use a separate -o per source."
+            )
+        if flat != self.flat:
+            if any(e.origin == "remote" for e in self.files.values()):
+                have, want = ("flat", "per-source folders") if self.flat else ("per-source folders", "flat")
+                raise SourceScopeError(
+                    f"{self.path} already tracks files with {have} layout; this run asks for "
+                    f"{want}. Use a fresh -o (or a fresh --state-file) to change layout."
+                )
+            self.flat = flat
+
     def _folder_for(self, scope: str, label: str | None, group_id: str) -> str:
+        if self.flat:
+            return ""
         for entry in self.files.values():
             if entry.origin == "remote" and _scope(entry) == scope:
                 return (entry.rel_path or "").split("/")[0]
@@ -303,10 +325,12 @@ class Manifest:
             problem = remote.problem
             try:
                 folder = self._folder_for(scope, remote.group_label, remote.group_id)
-                entry.rel_path = f"{folder}/{safe_relpath(remote.name)}"
+                entry.rel_path = "/".join(p for p in (folder, safe_relpath(remote.name)) if p)
             except ValueError as e:
                 folder = self._folder_for(scope, remote.group_label, remote.group_id)
-                entry.rel_path = f"{folder}/__invalid__/{remote.key.replace(':', '_')}"
+                entry.rel_path = "/".join(
+                    p for p in (folder, "__invalid__", remote.key.replace(":", "_")) if p
+                )
                 problem = f"unsafe remote path: {e}"
             if problem is None and entry.rel_path in rel_paths:
                 problem = f"name collision with {rel_paths[entry.rel_path]} at {entry.rel_path}"

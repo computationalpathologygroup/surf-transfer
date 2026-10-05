@@ -249,6 +249,7 @@ def run(
     manifest.claim_source_scope(
         (getattr(s, "scope_id", None) or s.source_id for s in sources), opts.allow_source_change
     )
+    manifest.claim_layout(opts.flat, len(sources))
     opts.output_dir.mkdir(parents=True, exist_ok=True)
     manifest.reconcile_local(opts.output_dir)
     if opts.accept_flagged:

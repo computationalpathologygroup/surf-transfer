@@ -147,6 +147,12 @@ Exit codes: 0 all verified | 1 usage/config error | 2 failed or incomplete |
     )
 
     run.add_argument(
+        "--flat",
+        action="store_true",
+        help="Put files directly in the output folder instead of a per-source subfolder "
+        "(one source per output folder; cannot be changed once files are tracked)",
+    )
+    run.add_argument(
         "--keep-zips",
         action="store_true",
         help="Keep each zip after it is unpacked and its slides are checked "
@@ -258,6 +264,7 @@ def build_config(args: argparse.Namespace, env: dict[str, str], home: Path) -> C
         min_free_bytes=parse_size(args.min_free),
         accept_flagged=args.accept_flagged,
         keep_zips=args.keep_zips,
+        flat=args.flat,
         allow_source_change=args.allow_source_change,
         slide_filter=tuple(args.slide),
     )

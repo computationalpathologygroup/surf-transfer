@@ -4,7 +4,12 @@ import json
 
 import pytest
 
-from surf_transfer.manifest import MANIFEST_VERSION, Manifest, migrate_v1_to_v2
+from surf_transfer.manifest import (
+    MANIFEST_VERSION,
+    Manifest,
+    SourceScopeError,
+    migrate_v1_to_v2,
+)
 from surf_transfer.models import (
     ARCHIVED,
     DOWNLOADED,
@@ -303,3 +308,25 @@ def test_slide_not_ready_again_once_it_has_a_verdict():
         e.status = DOWNLOADED
     slide.status = "corrupt"
     assert not m.slide_ready(slide)
+
+
+def test_flat_layout_has_no_source_folder_and_persists(tmp_path):
+    m = Manifest(tmp_path / "state.json")
+    m.claim_layout(True, 1)
+    m.sync_listing([remote(1, 1, name="a.svs"), remote(1, 2, name="sub/b.dat")], centre=None)
+    assert sorted(e.rel_path for e in m.files.values()) == ["a.svs", "sub/b.dat"]
+    m.save()
+    again = Manifest.load(tmp_path / "state.json")
+    assert again.flat
+    again.claim_layout(True, 1)
+    with pytest.raises(SourceScopeError):
+        again.claim_layout(False, 1)
+
+
+def test_flat_refuses_several_sources_and_layout_switch(tmp_path):
+    m = Manifest(tmp_path / "state.json")
+    with pytest.raises(SourceScopeError):
+        m.claim_layout(True, 2)
+    m.sync_listing([remote(1, 1, name="a.svs")], centre=None)
+    with pytest.raises(SourceScopeError):
+        m.claim_layout(True, 1)
